@@ -109,6 +109,7 @@ type LP struct {
 	StatPrimalIter, StatDualIter, StatPrimalCalls, StatDualCalls, StatPerturb int
 	StatPhase1Iter, StatPolishIter, StatSolves, StatTrouble, StatUpdFail      int
 	PolishTol                                                                 float64 // final dual tolerance for polishing (0 = off)
+	warm                                                                      bool    // last Solve ended optimal from this basis (warm start)
 	DualPhase1                                                                bool    // use dual phase 1 instead of primal when not dual feasible
 
 	rng *rand.Rand

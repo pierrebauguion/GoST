@@ -102,6 +102,8 @@ type Model struct {
 	cons      []constraint
 	sense     Sense
 	objOffset float64
+	colSig    map[string]int // column signature -> var index+1 (AddVarWithColumn)
+	start     []float64      // MIP start (NaN = not given), see SetStart
 }
 
 // NewModel creates an empty model.

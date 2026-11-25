@@ -1,6 +1,9 @@
 package simplex
 
-import "math"
+import (
+	"math"
+	"os"
+)
 
 // Solve optimizes the LP from the current basis (warm start). It chooses the
 // dual simplex when the basis is dual feasible (after bound flips) and the
@@ -22,6 +25,17 @@ func (lp *LP) Solve() Status {
 	var st Status
 	triedPhase1 := false
 	cleanup := false // primal feasible point: avoid bound flips that break it
+	// Warm start from a primal feasible but dual infeasible basis (typically
+	// after columns were added by pricing, or after a cost change): continue
+	// with the primal simplex instead of a dual phase 1, which would give up
+	// the primal feasibility of the current point.
+	if lp.warm && !PrimalWarmOff {
+		if n, _ := lp.sumPrimalInfeas(); n == 0 {
+			if b, o := lp.dualInfeasCounts(); o > 0 && b == 0 {
+				cleanup = true
+			}
+		}
+	}
 	for round := 0; round < 20; round++ {
 		var bad int
 		var flipped bool
@@ -107,6 +121,7 @@ func (lp *LP) Solve() Status {
 					continue
 				}
 				lp.polish()
+				lp.warm = true
 				return Optimal
 			}
 			lp.removePerturbation()
@@ -151,6 +166,7 @@ func (lp *LP) SolveFromScratch() Status {
 }
 
 func (lp *LP) initStateKeepProblem() {
+	lp.warm = false
 	N := lp.n + lp.m
 	for j := 0; j < N; j++ {
 		lp.status[j] = lp.defaultNonbasic(j)
@@ -231,3 +247,7 @@ var VerifyUpd = int(envFloatSimplex("GOST_VERIFYUPD", 25))
 
 // VerifyDebug compares the cheap verification with a refactorization.
 var VerifyDebug = envFloatSimplex("GOST_VERIFYDEBUG", 0) != 0
+
+// PrimalWarmOff disables the primal simplex on primal feasible warm starts
+// (GOST_PRIMALWARM=0).
+var PrimalWarmOff = os.Getenv("GOST_PRIMALWARM") == "0"

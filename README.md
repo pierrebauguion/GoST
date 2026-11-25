@@ -51,8 +51,27 @@ p.LazyConstraints = func(ctx *gost.ConstrContext) {
 
 - `Model.AddVarWithColumn(lo, up, obj, typ, name, col)` permet de modéliser par colonnes (problèmes maîtres).
 - Pour un modèle purement continu, `Result.Dual(c)` et `Result.ReducedCost(v)` donnent les duals et coûts réduits (dans le sens du modèle).
-- Exemples exécutables dans [`examples/`](examples/README.md) : `cuttingstock` (génération de colonnes), `concurrentflow` (flot concurrent maximum, formulation chemins), `tsp` (sous-tours en lazy + coupes utilisateur), `steinertsp` (TSP orienté sur graphe non complet, nœuds obligatoires, passages multiples), `lazy`, `production`, `mpsfile`. Tests correspondants : `callbacks_test.go`.
-- Règles : quand un callback est fourni, le presolve est désactivé (indices identiques au modèle, pas de réductions duales invalides). Avec `Pricing`, les coupes internes, le strong branching et la propagation sont aussi désactivés ; le LP n'élague qu'après convergence du pricing ; un nœud dont le LP est infaisable est élagué (prévoir des colonnes artificielles dans le maître) ; les variables générées doivent admettre la valeur 0 (`lo <= 0 <= up`) ; c'est au pricer d'éviter de régénérer une colonne existante.
+- Exemples exécutables dans [`examples/`](examples/README.md) : `cuttingstock` (génération de colonnes), `concurrentflow` (flot concurrent maximum, formulation chemins), `tsp` (sous-tours en lazy + coupes utilisateur), `steinertsp` (TSP orienté sur graphe non complet, nœuds obligatoires, passages multiples), `mipstart` (solution de départ), `lazy`, `production`, `mpsfile`. Tests correspondants : `callbacks_test.go`.
+- Règles : quand un callback est fourni, le presolve est désactivé (indices identiques au modèle, pas de réductions duales invalides). Avec `Pricing`, les coupes internes, le strong branching et la propagation sont aussi désactivés ; le LP n'élague qu'après convergence du pricing ; un nœud dont le LP est infaisable est élagué (prévoir des colonnes artificielles dans le maître) ; les variables générées doivent admettre la valeur 0 (`lo <= 0 <= up`) ; une colonne identique (bornes, coût, type, coefficients) à une colonne déjà créée par `AddVarWithColumn` ou `ctx.AddVar` n'est pas ajoutée : `ctx.AddVar` renvoie la variable existante (sinon une branche « z ≤ k » serait annulée par la copie et le branch-and-price pourrait boucler sans fin). Avec un branchement sur variables, le pricer doit malgré tout tenir compte des branchements pour un branch-and-price exact.
+- **Reprise à chaud** : après l'ajout de lignes (contraintes paresseuses, coupes), les nouvelles variables d'écart entrent en base et le LP repart de la base courante par le simplexe dual ; après l'ajout de colonnes (pricing), la base reste primal réalisable et le LP repart par le simplexe primal (sans phase 1). Vérifié par `TestWarmStartDynamic` : 4 à 6 itérations en moyenne par re-résolution, contre 90 à 110 pour résoudre le LP final depuis le début.
+
+## Solution de départ (MIP start)
+
+Une solution réalisable (pas forcément optimale), complète ou partielle, peut être donnée au solveur :
+
+```go
+m.SetStart(y[3], 1)          // une valeur à la fois (les autres restent libres)
+m.SetStartValues(x0)         // ou un vecteur complet (NaN = non donnée)
+r, _ := m.Solve(gost.DefaultParams())
+fmt.Println(r.StartStatus, r.StartInfo) // accepted / repaired / rejected + détail
+```
+
+- **Solution complète et réalisable** (bornes, intégralité, contraintes, et contraintes paresseuses s'il y en a) : elle devient la première solution incumbente. L'élagage par la borne, la fixation par coûts réduits et la propagation de l'objectif sont actifs dès la racine, et RINS part de cette solution.
+- **Solution partielle ou irréalisable** : elle est réparée en deux temps. D'abord, les variables entières données sont fixées à leur valeur arrondie et le reste est résolu par un sous-MIP limité à 1 000 nœuds. Si c'est impossible, on cherche la solution réalisable la plus proche (minimum de changements sur les entiers donnés). La solution obtenue devient la première incumbente.
+- Après le presolve, la solution est projetée dans le problème réduit ; si une réduction la rend non représentable, elle est gardée de côté et sert de seuil d'élagage (elle est rendue si rien de meilleur n'est trouvé).
+- Le départ n'influe jamais sur l'optimalité du résultat. Exemples sur MIPLIB avec l'optimum donné en départ : p2756 110 → 5 nœuds, 10teams 10,8 s → 0,15 s, mod008 25 → 9 nœuds, p0282 49 → 21 nœuds ; sur misc03 l'arbre est au contraire plus grand (693 → 1 057 nœuds, variance des choix de branchement).
+- `Model.ReadStart(texte)` lit des lignes « nom valeur » (ou une valeur par ligne dans l'ordre des variables) ; `Model.WriteSolution(r)` écrit une solution dans ce format. En ligne de commande : `-start fichier` et `-writesol fichier`.
+- Exemple : [`examples/mipstart`](examples/mipstart/main.go) (localisation d'entrepôts : départ glouton complet, départ partiel, départ irréalisable). Tests : `start_test.go`.
 
 D'autres programmes d'exemple sont dans [`examples/`](examples/README.md) (`go run ./examples/tsp`, etc.).
 
@@ -133,10 +152,10 @@ Gap fermé à la racine (relaxation après coupes, avant branchement) : gesa2 81
 3. **Coupes** : MIR/flow cover, lifted knapsack cover complet, clique, zéro-demi, implied bounds, pool de coupes global, coupes locales dans l'arbre.
 4. **Recherche** : parallélisme (arbre partagé entre goroutines, déterminisme optionnel), redémarrages, analyse de conflits, symétries (orbitopes).
 5. **Heuristiques** : feasibility pump, local branching, solution polishing, ordonnancement adaptatif des heuristiques.
-6. **API** : contraintes indicatrices et SOS1/SOS2, semi-continues, callback de solution incumbente, pricing de Farkas (nœuds infaisables en branch-and-price), branchement personnalisé (Ryan–Foster), lecteur format LP, warm start MIP.
+6. **API** : contraintes indicatrices et SOS1/SOS2, semi-continues, callback de solution incumbente, pricing de Farkas (nœuds infaisables en branch-and-price), branchement personnalisé (Ryan–Foster), lecteur format LP.
 
 ## Développement
 
-- `GOST_LPDEBUG=1` : traces du simplexe ; `GOST_LPSTATS=1` : statistiques LP (phase 1, dual, primal, polissage) ; `GOST_ETAGROWTH`, `GOST_MARKOWITZ`, `GOST_FT`, `GOST_MKSEARCH`, `GOST_ROWSEARCH`, `GOST_DENSE` (seuil du noyau dense), `GOST_REFREQ`, `GOST_VERIFYUPD` : réglages expérimentaux de la factorisation et du simplexe ; `GOST_NOMIR`, `GOST_CMIR_AGGR`, `GOST_CMIR_SLACK`, `GOST_CMIR_CUTS` : réglages des coupes c-MIR ; `GOST_TREESTATS=1` : statistiques de l'arbre ; `GOST_DUMPBASIS=fichier` : écrit la 50ᵉ base factorisée (banc d'essai `GOST_BASES=dossier go test -run TestFactorSpeed ./internal/lu`) ; `GOST_DUMPRESTART=fichier.mps` : écrit le problème redémarré ; `GOST_NOSUBMIP`, `GOST_NODIVE`, `GOST_NORESTART` : désactivent des heuristiques ou le redémarrage ; `GOST_PRESOLVE_OFF=aggr` désactive les éliminations de variables ; `GOST_HEURDEBUG=1` : traces des heuristiques ; `GOST_PRESOLVE_OFF=coef,dual,forcing,bound` : désactive des réductions.
+- `GOST_LPDEBUG=1` : traces du simplexe ; `GOST_LPSTATS=1` : statistiques LP (phase 1, dual, primal, polissage) ; `GOST_ETAGROWTH`, `GOST_MARKOWITZ`, `GOST_FT`, `GOST_MKSEARCH`, `GOST_ROWSEARCH`, `GOST_DENSE` (seuil du noyau dense), `GOST_REFREQ`, `GOST_VERIFYUPD` : réglages expérimentaux de la factorisation et du simplexe ; `GOST_NOMIR`, `GOST_CMIR_AGGR`, `GOST_CMIR_SLACK`, `GOST_CMIR_CUTS` : réglages des coupes c-MIR ; `GOST_TREESTATS=1` : statistiques de l'arbre ; `GOST_DUMPBASIS=fichier` : écrit la 50ᵉ base factorisée (banc d'essai `GOST_BASES=dossier go test -run TestFactorSpeed ./internal/lu`) ; `GOST_DUMPRESTART=fichier.mps` : écrit le problème redémarré ; `GOST_NOSUBMIP`, `GOST_NODIVE`, `GOST_NORESTART` : désactivent des heuristiques ou le redémarrage ; `GOST_STARTCUTOFF=1` : force l'usage de la solution de départ comme simple seuil d'élagage (test) ; `GOST_PRIMALWARM=0` : reprise après ajout de colonnes par phase 1 duale (ancien comportement) ; `GOST_PRESOLVE_OFF=aggr` désactive les éliminations de variables ; `GOST_HEURDEBUG=1` : traces des heuristiques ; `GOST_PRESOLVE_OFF=coef,dual,forcing,bound` : désactive des réductions.
 - `GOST_PROF=<instance> go test -run TestProfileInstance -cpuprofile cpu.out .` pour profiler.
 - Le chemin de module est `gost` : renommez-le (ex. `github.com/<org>/gost`) dans `go.mod` avant publication.

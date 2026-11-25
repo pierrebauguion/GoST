@@ -68,6 +68,9 @@ type solver struct {
 	pcAvgSum           [2]float64
 	pcAvgCnt           [2]int
 	lastBasis          *simplex.Basis
+	dynPending         string    // "rows"/"cols" added since the last LP solve
+	startX             []float64 // MIP start (solver space), installed in run
+	startRejected      bool      // the start was refused when installed
 	sbIters            int
 
 	open    nodeHeap
@@ -217,6 +220,14 @@ func (s *solver) run() {
 	for i := range s.lpRowOf {
 		s.lpRowOf[i] = i
 	}
+	if s.startX != nil {
+		// MIP start: first incumbent (also checked by lazy constraints).
+		if !s.newIncumbent(s.startX, s.objOf(s.startX), "start") {
+			s.startRejected = true
+			s.opt.logf("MIP start rejected by the solver (lazy constraints or tolerances)\n")
+		}
+		s.startX = nil
+	}
 
 	// Root LP with pricing, lazy constraints and user cuts.
 	for round := 0; ; round++ {
@@ -224,6 +235,15 @@ func (s *solver) run() {
 		switch st {
 		case simplex.Infeasible:
 			s.status = StatusInfeasible
+			return
+		case simplex.Cutoff:
+			// The root bound already reaches the incumbent (e.g. a MIP
+			// start) or the cutoff: nothing better exists.
+			s.status = StatusInfeasible
+			if s.hasIncumbent {
+				s.status = StatusOptimal
+				s.globalBound = s.incObj
+			}
 			return
 		case simplex.Unbounded:
 			s.status = StatusUnbounded
@@ -358,6 +378,7 @@ func (s *solver) restart() bool {
 	o := s.opt
 	o.noRestart = true
 	o.DebugSolution = nil
+	o.Start = nil
 	// only solutions better than the incumbent by more than the gap
 	// tolerance are of interest: "infeasible" then proves optimality
 	inc := s.incObj + s.p.Offset
@@ -492,7 +513,7 @@ func (s *solver) solveLP(iterLimit int) simplex.Status {
 	if s.pricing() {
 		s.lp.ObjCutoff = math.Inf(1) // bound not valid before pricing converges
 	}
-	st := s.lp.Solve()
+	st := s.dynSolve()
 	s.lp.MaxIter = 0
 	return s.priceLoop(st, s.curDepth)
 }

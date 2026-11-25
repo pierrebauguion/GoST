@@ -4,7 +4,6 @@ import (
 	"math"
 
 	"gost/internal/problem"
-
 	"gost/internal/simplex"
 )
 
@@ -77,6 +76,7 @@ func (s *solver) addRows(rows []RowSpec) {
 	p.NumRows = s.m
 	s.rebuildCSC()
 	s.lp.AddRows(idx, val, rl, ru)
+	s.dynPending = "rows"
 	s.computeLocks()
 	s.lpChanged = true
 	s.lastBasis = nil
@@ -133,6 +133,7 @@ func (s *solver) addCols(cols []ColSpec) {
 	s.debugSol = nil
 	s.rebuildCSR()
 	s.lp.AddCols(cost, lb, ub, idx, val)
+	s.dynPending = "cols"
 	s.computeLocks()
 	s.detectObjIntegral()
 	s.lpChanged = true
@@ -199,7 +200,7 @@ func (s *solver) priceLoop(st simplex.Status, depth int) simplex.Status {
 			break
 		}
 		s.addCols(cols)
-		st = s.lp.Solve()
+		st = s.dynSolve()
 	}
 	return st
 }
@@ -238,4 +239,42 @@ func appendRows(q *problem.Problem, rows []RowSpec) {
 			next[j]++
 		}
 	}
+}
+
+// dynSolve re-solves the LP after rows or columns were added, recording
+// warm-start statistics (DynStats).
+func (s *solver) dynSolve() simplex.Status {
+	lp := s.lp
+	p1, pr, du := lp.StatPhase1Iter, lp.StatPrimalIter, lp.StatDualIter
+	st := lp.Solve()
+	if s.dynPending != "" {
+		DynStats.record(s.dynPending, lp.Iter, lp.StatPhase1Iter-p1, lp.StatPrimalIter-pr, lp.StatDualIter-du)
+		s.dynPending = ""
+	}
+	return st
+}
+
+// DynStats accumulates, for the LP re-solves that follow added rows or
+// columns, the number of re-solves and of simplex iterations by phase.
+// Debug/test helper (not thread-safe).
+var DynStats dynStats
+
+type dynStats struct {
+	Resolves, Iters, MaxIters, Phase1, Primal, Dual map[string]int
+}
+
+func (d *dynStats) Reset() {
+	*d = dynStats{map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}}
+}
+
+func (d *dynStats) record(kind string, it, p1, pr, du int) {
+	if d.Resolves == nil {
+		d.Reset()
+	}
+	d.Resolves[kind]++
+	d.Iters[kind] += it
+	d.MaxIters[kind] = max(d.MaxIters[kind], it)
+	d.Phase1[kind] += p1
+	d.Primal[kind] += pr
+	d.Dual[kind] += du
 }

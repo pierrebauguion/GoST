@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"gost/internal/presolve"
@@ -58,6 +59,11 @@ type Options struct {
 	// Hooks are user callbacks (lazy constraints, user cuts, pricing).
 	Hooks *Hooks
 
+	// Start is a MIP start in the original space (NaN = value not given):
+	// a complete feasible solution becomes the first incumbent; a partial
+	// or infeasible one is repaired by a sub-MIP first.
+	Start []float64
+
 	noSubMIP  bool // set for sub-MIPs to avoid recursion
 	noRestart bool
 	heurDebug bool
@@ -89,6 +95,9 @@ type Result struct {
 	// For pure LPs solved to optimality: duals of rows and reduced costs.
 	Duals        []float64
 	ReducedCosts []float64
+	// What happened to Options.Start.
+	StartStatus StartStatus
+	StartInfo   string
 }
 
 func (o *Options) logf(format string, a ...any) {
@@ -117,6 +126,23 @@ func Solve(p *problem.Problem, opt Options) *Result {
 	if countTrue(p.Integer) == 0 {
 		// Pure LP: solve the full problem so duals are available.
 		opt.Presolve = false
+	}
+	// MIP start: check it (or repair it) in the original space.
+	var ext []float64 // feasible start kept outside the solver (see below)
+	extObj := math.Inf(1)
+	if opt.Start != nil {
+		var st StartStatus
+		var info string
+		ext, extObj, st, info = prepareStart(p, opt)
+		res.StartStatus, res.StartInfo = st, info
+		switch st {
+		case StartAccepted:
+			opt.logf("MIP start accepted: objective %.10g\n", extObj)
+		case StartRepaired:
+			opt.logf("MIP start repaired: objective %.10g (%s)\n", extObj, info)
+		case StartRejected:
+			opt.logf("MIP start rejected: %s\n", info)
+		}
 	}
 	if opt.Presolve {
 		presolve.DebugSolution = opt.DebugSolution
@@ -147,7 +173,28 @@ func Solve(p *problem.Problem, opt Options) *Result {
 		}
 	}
 	opt.heurDebug = os.Getenv("GOST_HEURDEBUG") != ""
+	// The start becomes the first incumbent of the solver when it is
+	// feasible in the solver's problem (always without presolve; after
+	// presolve, dual reductions may have cut it off). Otherwise it is kept
+	// aside and only its objective is passed as a cutoff.
+	var startX []float64
+	if ext != nil {
+		xs := ext
+		if pre != nil {
+			xs = make([]float64, q.NumCols)
+			for k, j := range pre.ColMap {
+				xs[k] = ext[j]
+			}
+		}
+		if feasibleWithin(q, xs, opt.FeasTol, opt.IntTol) && os.Getenv("GOST_STARTCUTOFF") == "" {
+			startX = xs
+		} else {
+			opt.Cutoff = math.Min(opt.Cutoff, extObj)
+			opt.logf("MIP start not representable in the presolved problem: used as cutoff\n")
+		}
+	}
 	s := newSolver(q, opt, t0)
+	s.startX = startX
 	if opt.DebugSolution != nil {
 		if pre != nil {
 			s.debugSol = make([]float64, q.NumCols)
@@ -173,6 +220,11 @@ func Solve(p *problem.Problem, opt Options) *Result {
 		}
 	}
 	s.run()
+	if s.startRejected {
+		res.StartStatus = StartRejected
+		res.StartInfo = strings.TrimPrefix(res.StartInfo+"; refused by lazy constraints or solver tolerances", "; ")
+		ext = nil
+	}
 	res.Status = s.status
 	res.Nodes = s.nodes
 	if s.lp != nil {
@@ -201,6 +253,18 @@ func Solve(p *problem.Problem, opt Options) *Result {
 	}
 	if s.status == StatusInfeasible {
 		res.Bound = math.Inf(1)
+	}
+	// Start kept outside the solver: it is the answer unless the solver
+	// found something better ("infeasible" then means nothing better).
+	if ext != nil && startX == nil && (res.X == nil || res.Objective > extObj) {
+		res.X, res.Objective = ext, extObj
+		switch res.Status {
+		case StatusInfeasible, StatusOptimal:
+			res.Status = StatusOptimal
+			res.Bound = extObj
+		default:
+			res.Bound = math.Min(res.Bound, extObj)
+		}
 	}
 	res.Gap = relGap(res.Objective, res.Bound)
 	res.Time = time.Since(t0)

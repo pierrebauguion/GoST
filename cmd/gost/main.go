@@ -25,6 +25,8 @@ func main() {
 	sb := flag.Int("sb", -1, "strong branching candidates (-1 = default)")
 	rel := flag.Int("rel", -1, "reliability threshold (-1 = default)")
 	debugSol := flag.String("debugsol", "", "file with a known solution (one value per line, column order)")
+	start := flag.String("start", "", "MIP start file (\"name value\" lines, or one value per line in column order; partial starts are repaired)")
+	writeSol := flag.String("writesol", "", "write the best solution to this file (\"name value\" lines, usable with -start)")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: gost [flags] model.mps[.gz]")
@@ -69,6 +71,25 @@ func main() {
 			p.DebugSolution = append(p.DebugSolution, v)
 		}
 	}
+	if *start != "" {
+		data, err := os.ReadFile(*start)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if _, err := m.ReadStart(string(data)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 	r, _ := m.Solve(p)
+	if *start != "" {
+		fmt.Printf("MIP start: %s %s\n", r.StartStatus, r.StartInfo)
+	}
+	if *writeSol != "" && r.HasSolution() {
+		if err := os.WriteFile(*writeSol, []byte(m.WriteSolution(r)), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}
 	fmt.Printf("%s status=%s obj=%.10g bound=%.10g nodes=%d time=%.2fs\n", m.Name, r.Status, r.Objective, r.Bound, r.Nodes, r.Time.Seconds())
 }

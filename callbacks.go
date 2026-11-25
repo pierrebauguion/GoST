@@ -3,6 +3,8 @@ package gost
 import (
 	"fmt"
 	"math"
+	"sort"
+	"strings"
 
 	"gost/internal/mip"
 )
@@ -48,7 +50,38 @@ func (m *Model) AddVarWithColumn(lo, up, obj float64, typ VarType, name string, 
 			m.cons[i].val = append(m.cons[i].val, a)
 		}
 	}
+	if m.colSig == nil {
+		m.colSig = map[string]int{}
+	}
+	if sig := m.columnSignature(lo, up, obj, typ, col); m.colSig[sig] == 0 {
+		m.colSig[sig] = v.idx + 1
+	}
 	return v
+}
+
+// columnSignature identifies a column by its bounds, cost, type and
+// (summed, sorted) coefficients.
+func (m *Model) columnSignature(lo, up, obj float64, typ VarType, col *Column) string {
+	if typ == Binary {
+		lo, up = math.Max(lo, 0), math.Min(up, 1)
+	}
+	acc := map[int]float64{}
+	for k, c := range col.Constrs {
+		acc[c.idx] += col.Coefs[k]
+	}
+	rows := make([]int, 0, len(acc))
+	for i, a := range acc {
+		if a != 0 {
+			rows = append(rows, i)
+		}
+	}
+	sort.Ints(rows)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%v|%v|%v|%d", lo, up, obj, typ)
+	for _, i := range rows {
+		fmt.Fprintf(&b, "|%d:%v", i, acc[i])
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +144,8 @@ type PricingContext struct {
 	sign  float64
 	cols  []mip.ColSpec
 	added int
+
+	duplicates int // columns ignored because identical to an existing one
 }
 
 // Dual returns the dual value of constraint c (model sense): the reduced
@@ -167,6 +202,16 @@ func (c *PricingContext) AddVar(lo, up, obj float64, typ VarType, name string, c
 	}
 	if lo > 0 || up < 0 {
 		panic("gost: priced variables must have lo <= 0 <= up")
+	}
+	// A column identical to one already added with AddVarWithColumn or
+	// AddVar is not added again (that would silently undo branching on the
+	// existing variable and could make branch-and-price loop forever): the
+	// existing variable is returned.
+	if col != nil && c.m.colSig != nil {
+		if k := c.m.colSig[c.m.columnSignature(lo, up, obj, typ, col)]; k > 0 {
+			c.duplicates++
+			return Var{k - 1}
+		}
 	}
 	v := c.m.AddVarWithColumn(lo, up, obj, typ, name, col)
 	spec := mip.ColSpec{Obj: c.sign * obj, Lo: lo, Up: up, Integer: typ != Continuous}

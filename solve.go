@@ -86,9 +86,12 @@ type Result struct {
 	LPIters   int
 	Cuts      int
 	Time      time.Duration
-	x         []float64
-	duals     []float64
-	redCosts  []float64
+	// StartStatus and StartInfo report what happened to the MIP start.
+	StartStatus StartStatus
+	StartInfo   string
+	x           []float64
+	duals       []float64
+	redCosts    []float64
 }
 
 // Dual returns the dual value of constraint c for pure LP models (model
@@ -151,10 +154,12 @@ func (m *Model) Solve(p Params) (*Result, error) {
 	o.Log = p.Log
 	o.DebugSolution = p.DebugSolution
 	o.Hooks = m.hooks(p)
+	o.Start = m.startVector()
 	r := mip.Solve(prob, o)
 	res := &Result{
 		Status: Status(r.Status), Objective: r.Objective, Bound: r.Bound, Gap: r.Gap,
 		Nodes: r.Nodes, LPIters: r.LPIters, Cuts: r.Cuts, Time: r.Time, x: r.X,
+		StartStatus: StartStatus(r.StartStatus), StartInfo: r.StartInfo,
 	}
 	sign := 1.0
 	if m.sense == Maximize {

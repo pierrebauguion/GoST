@@ -27,6 +27,9 @@ func (s *solver) logLine(src string, sol bool) {
 		if src != "" && src != "node" {
 			mark = "H"
 		}
+		if src == "start" {
+			mark = "S"
+		}
 	}
 	inc := s.incObj + s.p.Offset
 	bnd := s.globalBound + s.p.Offset
