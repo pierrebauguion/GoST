@@ -9,6 +9,7 @@ Chaque dossier est un programme autonome, à lancer depuis la racine du dépôt 
 | `lazy` | `go run ./examples/lazy` | Contrainte paresseuse (`Params.LazyConstraints`) ajoutée seulement quand une solution candidate la viole |
 | `cuttingstock` | `go run ./examples/cuttingstock` | Génération de colonnes (`Params.Pricing`, `AddVarWithColumn`, duals) : relaxation LP puis solution entière en price-and-branch |
 | `concurrentflow` | `go run ./examples/concurrentflow` | Flot concurrent maximum en formulation chemins : génération de colonnes par plus courts chemins sur les duals des capacités, décomposition du flot par chemin, vérification par la formulation arcs |
+| `steinertsp` | `go run ./examples/steinertsp` | TSP de Steiner sur un graphe orienté non complet : seul un sous-ensemble de nœuds est obligatoire, passages multiples autorisés (variables entières), connexité en contraintes paresseuses + coupes par flot maximum, marche eulérienne, vérification par plus courts chemins + Held–Karp |
 | `tsp` | `go run ./examples/tsp [n]` | Voyageur de commerce : sous-tours en contraintes paresseuses + coupes utilisateur (`Params.UserCuts`) |
 
 Les tests automatiques correspondants sont dans `callbacks_test.go` à la racine (`TestColumnGenerationCuttingStock`, `TestLazySubtourTSP`, `TestLazyTSPLarger`, `TestLPDualsAndRowGeneration`).

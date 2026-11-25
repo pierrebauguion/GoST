@@ -51,7 +51,7 @@ p.LazyConstraints = func(ctx *gost.ConstrContext) {
 
 - `Model.AddVarWithColumn(lo, up, obj, typ, name, col)` permet de modéliser par colonnes (problèmes maîtres).
 - Pour un modèle purement continu, `Result.Dual(c)` et `Result.ReducedCost(v)` donnent les duals et coûts réduits (dans le sens du modèle).
-- Exemples exécutables dans [`examples/`](examples/README.md) : `cuttingstock` (génération de colonnes), `concurrentflow` (flot concurrent maximum, formulation chemins), `tsp` (sous-tours en lazy + coupes utilisateur), `lazy`, `production`, `mpsfile`. Tests correspondants : `callbacks_test.go`.
+- Exemples exécutables dans [`examples/`](examples/README.md) : `cuttingstock` (génération de colonnes), `concurrentflow` (flot concurrent maximum, formulation chemins), `tsp` (sous-tours en lazy + coupes utilisateur), `steinertsp` (TSP orienté sur graphe non complet, nœuds obligatoires, passages multiples), `lazy`, `production`, `mpsfile`. Tests correspondants : `callbacks_test.go`.
 - Règles : quand un callback est fourni, le presolve est désactivé (indices identiques au modèle, pas de réductions duales invalides). Avec `Pricing`, les coupes internes, le strong branching et la propagation sont aussi désactivés ; le LP n'élague qu'après convergence du pricing ; un nœud dont le LP est infaisable est élagué (prévoir des colonnes artificielles dans le maître) ; les variables générées doivent admettre la valeur 0 (`lo <= 0 <= up`) ; c'est au pricer d'éviter de régénérer une colonne existante.
 
 D'autres programmes d'exemple sont dans [`examples/`](examples/README.md) (`go run ./examples/tsp`, etc.).

@@ -98,9 +98,9 @@ func main() {
 		// compression).
 		var find func(int) int
 		find = func(a int) int {
-			for parent[a] != a {
-				parent[a] = parent[parent[a]]
-				a = parent[a]
+			for parent[a] != a { //if parent of a is not himself
+				parent[a] = parent[parent[a]] //then  it will be the parent of parent of a (direct propagation)
+				a = parent[a]                 //shift to parent of a (indirect propagation)
 			}
 			return a
 		}
