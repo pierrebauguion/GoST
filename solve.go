@@ -81,6 +81,7 @@ type Result struct {
 	Status    Status
 	Objective float64 // objective of the best solution (model sense)
 	Bound     float64 // best bound (model sense)
+	RootBound float64 // bound at the end of the root node, after cuts (model sense)
 	Gap       float64 // relative gap
 	Nodes     int
 	LPIters   int
@@ -160,11 +161,12 @@ func (m *Model) Solve(p Params) (*Result, error) {
 		Status: Status(r.Status), Objective: r.Objective, Bound: r.Bound, Gap: r.Gap,
 		Nodes: r.Nodes, LPIters: r.LPIters, Cuts: r.Cuts, Time: r.Time, x: r.X,
 		StartStatus: StartStatus(r.StartStatus), StartInfo: r.StartInfo,
+		RootBound: r.RootBound,
 	}
 	sign := 1.0
 	if m.sense == Maximize {
 		sign = -1
-		res.Objective, res.Bound = -res.Objective, -res.Bound
+		res.Objective, res.Bound, res.RootBound = -res.Objective, -res.Bound, -res.RootBound
 	}
 	for _, y := range r.Duals {
 		res.duals = append(res.duals, sign*y)

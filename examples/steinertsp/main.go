@@ -208,63 +208,198 @@ func eulerWalk(n int, arcs []arc, count []int, start int) []int {
 	return walk
 }
 
-// heldKarp is the cross-check: it computes all shortest-path distances
-// (Floyd–Warshall), then the shortest closed tour through the required
-// nodes by dynamic programming over subsets (Held–Karp), and returns its
-// length.
-func heldKarp(n int, arcs []arc, req []int) float64 {
-	// d[i][j]: shortest path length from i to j in the network.
+// printWalk prints a walk, with required nodes in brackets.
+func printWalk(label string, walk []int, isReq []bool) {
+	fmt.Print(label)
+	for _, v := range walk {
+		if isReq[v] {
+			fmt.Printf(" [%d]", v) // required node
+		} else {
+			fmt.Printf(" %d", v) // node used only to pass through
+		}
+	}
+	fmt.Println()
+}
+
+// heldKarp is the cross-check. It solves the same problem by a completely
+// different method and returns the length of the optimal walk and the walk
+// itself (sequence of network nodes, starting and ending at req[0]).
+//
+// Step 1: reduction to a classical TSP on the required nodes only.
+//
+// Since nodes and arcs may be reused, an optimal walk goes from one required
+// node to the next along a shortest path of the network. So once the
+// shortest-path distances d[i][j] are known, the problem becomes: in which
+// order should the required nodes be visited? That is an ordinary
+// asymmetric TSP on the |R| required nodes, with distances d (a complete
+// "virtual" graph, even though the network itself is sparse).
+//
+// Step 2: exact TSP by dynamic programming over subsets (Held–Karp, 1962).
+//
+// Instead of trying the (|R|−1)! orders, Held–Karp notices that the best
+// way to finish a tour only depends on WHICH required nodes have already
+// been visited and WHERE we currently stand, not on the order in which they
+// were visited. It therefore stores, for every subset S of required nodes
+// and every node j of S, the length of the best path that
+//
+//	starts at a fixed node req[0], visits exactly the nodes of S, ends at j.
+//
+// The tour is a cycle, so fixing its start at req[0] loses nothing. Cost:
+// 2^(|R|−1) subsets × |R| end nodes × |R| extensions, i.e. about 7 million
+// steps for |R| = 16 (instead of 15! ≈ 1.3·10¹² orders); memory 2^(|R|−1)·|R|
+// numbers. Beyond ~25 required nodes it becomes too large, which is why the
+// example itself uses the branch-and-cut formulation.
+//
+// Step 3: recovering the walk. The dynamic program only computes lengths;
+// to rebuild the tour we also record, for every state (S, k), which node j
+// it was reached from (parent), then walk these records backwards from the
+// best final state. Each leg between two consecutive required nodes is
+// finally expanded into the actual network nodes of its shortest path,
+// using the "next hop" table filled by Floyd–Warshall.
+func heldKarp(n int, arcs []arc, req []int) (float64, []int) {
+	// --- Shortest paths between all pairs (Floyd–Warshall) -------------------
+	// d[i][j]: length of the shortest path from i to j in the network
+	// (+Inf if j cannot be reached from i). Start with the direct arcs.
+	// next[i][j]: first node after i on that shortest path (-1 if none),
+	// so that the path can be rebuilt hop by hop: i, next[i][j],
+	// next[next[i][j]][j], ..., j.
 	d := make([][]float64, n)
+	next := make([][]int, n)
 	for i := range d {
 		d[i] = make([]float64, n)
+		next[i] = make([]int, n)
 		for j := range d[i] {
+			next[i][j] = -1
 			if i != j {
 				d[i][j] = math.Inf(1)
 			}
 		}
 	}
 	for _, e := range arcs {
-		d[e.from][e.to] = math.Min(d[e.from][e.to], e.cost)
+		if e.cost < d[e.from][e.to] {
+			d[e.from][e.to] = e.cost
+			next[e.from][e.to] = e.to // direct arc: the next hop is the end
+		}
 	}
+	// After iteration k, d[i][j] is the shortest path from i to j whose
+	// intermediate nodes are all among 0..k: going through k improves it
+	// iff d[i][k] + d[k][j] is shorter. After the last k, all nodes are
+	// allowed as intermediates, so d holds the true shortest distances.
 	for k := 0; k < n; k++ {
 		for i := 0; i < n; i++ {
 			for j := 0; j < n; j++ {
-				d[i][j] = math.Min(d[i][j], d[i][k]+d[k][j])
-			}
-		}
-	}
-	// f[S][j]: shortest path that starts at req[0], visits the required
-	// nodes req[1..] in subset S (bit i-1 for req[i]) and ends at req[j].
-	r := len(req)
-	full := 1 << (r - 1)
-	f := make([][]float64, full)
-	for S := range f {
-		f[S] = make([]float64, r)
-		for j := range f[S] {
-			f[S][j] = math.Inf(1)
-		}
-	}
-	for j := 1; j < r; j++ {
-		f[1<<(j-1)][j] = d[req[0]][req[j]]
-	}
-	for S := 1; S < full; S++ {
-		for j := 1; j < r; j++ {
-			if S&(1<<(j-1)) == 0 || math.IsInf(f[S][j], 1) {
-				continue
-			}
-			for k := 1; k < r; k++ {
-				if S&(1<<(k-1)) == 0 {
-					T := S | 1<<(k-1)
-					f[T][k] = math.Min(f[T][k], f[S][j]+d[req[j]][req[k]])
+				if d[i][k]+d[k][j] < d[i][j] {
+					d[i][j] = d[i][k] + d[k][j]
+					// the path i → j now goes through k: it starts like
+					// the path i → k
+					next[i][j] = next[i][k]
 				}
 			}
 		}
 	}
-	best := math.Inf(1)
-	for j := 1; j < r; j++ {
-		best = math.Min(best, f[full-1][j]+d[req[j]][req[0]])
+
+	// --- Held–Karp dynamic program --------------------------------------------
+	// The required nodes are numbered 0..r-1 through req. Node 0 (req[0]) is
+	// the start; the other r-1 nodes are encoded in a bit mask S: bit j-1
+	// of S is set iff req[j] has been visited. full = 2^(r-1) is the number
+	// of such subsets; full-1 (all bits set) means "everybody visited".
+	r := len(req)
+	full := 1 << (r - 1)
+
+	// f[S][j] (for j in S): length of the shortest path that starts at
+	// req[0], visits exactly the required nodes of S (in some order) and
+	// ends at req[j]. +Inf means "not computed / impossible".
+	// parent[S][j]: the required node visited just before req[j] on the
+	// best path of state (S, j) (0 = the start req[0]).
+	f := make([][]float64, full)
+	parent := make([][]int, full)
+	for S := range f {
+		f[S] = make([]float64, r)
+		parent[S] = make([]int, r)
+		for j := range f[S] {
+			f[S][j] = math.Inf(1)
+		}
 	}
-	return best
+
+	// Base case: subsets with a single node j — go straight from req[0] to
+	// req[j].
+	for j := 1; j < r; j++ {
+		f[1<<(j-1)][j] = d[req[0]][req[j]]
+		parent[1<<(j-1)][j] = 0 // reached directly from the start
+	}
+
+	// Recurrence ("push" form): from a path described by (S, j), extend it
+	// by one not-yet-visited node k. The new path visits T = S ∪ {k}, ends
+	// at k and has length f[S][j] + d(req[j], req[k]); keep the best one:
+	//
+	//	f[S ∪ {k}][k] = min over j ∈ S of  f[S][j] + d[req[j]][req[k]]
+	//
+	// T is always numerically larger than S (one more bit set), so
+	// processing the subsets in increasing order of S guarantees that
+	// f[S][·] is final before it is used to build larger subsets.
+	for S := 1; S < full; S++ {
+		for j := 1; j < r; j++ {
+			// j must belong to S, and the state must be reachable.
+			if S&(1<<(j-1)) == 0 || math.IsInf(f[S][j], 1) {
+				continue
+			}
+			for k := 1; k < r; k++ {
+				if S&(1<<(k-1)) == 0 { // k not visited yet
+					T := S | 1<<(k-1)
+					if v := f[S][j] + d[req[j]][req[k]]; v < f[T][k] {
+						f[T][k] = v
+						parent[T][k] = j // remember where (T, k) came from
+					}
+					//T (compare and write) is strictly greater than S (read)
+					//S has to be final at this point, it is ok has T > S
+				}
+			}
+		}
+	}
+
+	// Closing the tour: all required nodes visited (S = full-1), ending at
+	// some j, then back to the start req[0]. The best such cycle is the
+	// optimal tour, i.e. the length of the optimal walk in the network.
+	best, last := math.Inf(1), -1 // last: required node visited last
+	for j := 1; j < r; j++ {
+		if v := f[full-1][j] + d[req[j]][req[0]]; v < best {
+			best, last = v, j
+		}
+	}
+	if last < 0 {
+		return best, nil // some required node cannot be reached
+	}
+
+	// --- Recovering the order of the required nodes ---------------------------
+	// Start from the final state (all visited, ending at last) and follow
+	// the parent records backwards: each step removes the current node from
+	// S and moves to the node it was reached from, until S is empty. The
+	// nodes come out in reverse order.
+	order := []int{}
+	for S, j := full-1, last; S != 0; {
+		order = append(order, j)
+		pj := parent[S][j]
+		S &^= 1 << (j - 1) // remove req[j] from S
+		j = pj
+	}
+	// reverse, and add the start at both ends: 0, ..., 0
+	for a, b := 0, len(order)-1; a < b; a, b = a+1, b-1 {
+		order[a], order[b] = order[b], order[a]
+	}
+	order = append(append([]int{0}, order...), 0)
+
+	// --- Expanding each leg into network nodes --------------------------------
+	// Between two consecutive required nodes u and v, follow the next-hop
+	// table from u until v is reached.
+	walk := []int{req[0]}
+	for t := 0; t+1 < len(order); t++ {
+		u, v := req[order[t]], req[order[t+1]]
+		for u != v {
+			u = next[u][v]
+			walk = append(walk, u)
+		}
+	}
+	return best, walk
 }
 
 func main() {
@@ -396,15 +531,7 @@ func main() {
 	for _, v := range walk[1:] {
 		visits[v]++
 	}
-	fmt.Print("walk:")
-	for _, v := range walk {
-		if isReq[v] {
-			fmt.Printf(" [%d]", v) // required node
-		} else {
-			fmt.Printf(" %d", v) // node used only to pass through
-		}
-	}
-	fmt.Println()
+	printWalk("walk:", walk, isReq)
 	fmt.Println("required nodes are in brackets; nodes visited more than once:")
 	for v := 0; v < n; v++ {
 		if visits[v] > 1 {
@@ -413,6 +540,19 @@ func main() {
 	}
 
 	// --- Cross-check ---------------------------------------------------------
-	ref := heldKarp(n, arcs, req)
+	ref, refWalk := heldKarp(n, arcs, req)
 	fmt.Printf("shortest paths + Held–Karp: %.0f (difference %.0f)\n", ref, math.Abs(ref-res.Objective))
+	// The Held–Karp walk may differ from the solver's one when several
+	// optimal walks exist; its length is recomputed arc by arc as a check.
+	printWalk("Held–Karp walk:", refWalk, isReq)
+	length := 0.0
+	for t := 0; t+1 < len(refWalk); t++ {
+		for _, e := range arcs {
+			if e.from == refWalk[t] && e.to == refWalk[t+1] {
+				length += e.cost
+				break
+			}
+		}
+	}
+	fmt.Printf("Held–Karp walk length, recomputed from its arcs: %.0f\n", length)
 }
