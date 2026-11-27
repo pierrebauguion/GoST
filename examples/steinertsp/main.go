@@ -36,7 +36,8 @@
 // distances between required nodes (Floyd–Warshall), then an exact
 // asymmetric TSP on the required nodes only (Held–Karp dynamic program).
 //
-//	go run ./examples/steinertsp
+//	go run ./examples/steinertsp           # random instance (80 nodes)
+//	go run ./examples/steinertsp evreux    # real warehouse network and pick lists (evreux.go)
 package main
 
 import (
@@ -45,6 +46,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 
 	"gost"
 )
@@ -221,43 +223,9 @@ func printWalk(label string, walk []int, isReq []bool) {
 	fmt.Println()
 }
 
-// heldKarp is the cross-check. It solves the same problem by a completely
-// different method and returns the length of the optimal walk and the walk
-// itself (sequence of network nodes, starting and ending at req[0]).
-//
-// Step 1: reduction to a classical TSP on the required nodes only.
-//
-// Since nodes and arcs may be reused, an optimal walk goes from one required
-// node to the next along a shortest path of the network. So once the
-// shortest-path distances d[i][j] are known, the problem becomes: in which
-// order should the required nodes be visited? That is an ordinary
-// asymmetric TSP on the |R| required nodes, with distances d (a complete
-// "virtual" graph, even though the network itself is sparse).
-//
-// Step 2: exact TSP by dynamic programming over subsets (Held–Karp, 1962).
-//
-// Instead of trying the (|R|−1)! orders, Held–Karp notices that the best
-// way to finish a tour only depends on WHICH required nodes have already
-// been visited and WHERE we currently stand, not on the order in which they
-// were visited. It therefore stores, for every subset S of required nodes
-// and every node j of S, the length of the best path that
-//
-//	starts at a fixed node req[0], visits exactly the nodes of S, ends at j.
-//
-// The tour is a cycle, so fixing its start at req[0] loses nothing. Cost:
-// 2^(|R|−1) subsets × |R| end nodes × |R| extensions, i.e. about 7 million
-// steps for |R| = 16 (instead of 15! ≈ 1.3·10¹² orders); memory 2^(|R|−1)·|R|
-// numbers. Beyond ~25 required nodes it becomes too large, which is why the
-// example itself uses the branch-and-cut formulation.
-//
-// Step 3: recovering the walk. The dynamic program only computes lengths;
-// to rebuild the tour we also record, for every state (S, k), which node j
-// it was reached from (parent), then walk these records backwards from the
-// best final state. Each leg between two consecutive required nodes is
-// finally expanded into the actual network nodes of its shortest path,
-// using the "next hop" table filled by Floyd–Warshall.
-func heldKarp(n int, arcs []arc, req []int) (float64, []int) {
-	// --- Shortest paths between all pairs (Floyd–Warshall) -------------------
+// shortestPaths computes all shortest-path lengths of the network
+// (Floyd–Warshall) and the "next hop" table used to rebuild the paths.
+func shortestPaths(n int, arcs []arc) ([][]float64, [][]int) {
 	// d[i][j]: length of the shortest path from i to j in the network
 	// (+Inf if j cannot be reached from i). Start with the direct arcs.
 	// next[i][j]: first node after i on that shortest path (-1 if none),
@@ -297,6 +265,47 @@ func heldKarp(n int, arcs []arc, req []int) (float64, []int) {
 			}
 		}
 	}
+	return d, next
+}
+
+// heldKarp is the cross-check. It solves the same problem by a completely
+// different method and returns the length of the optimal walk and the walk
+// itself (sequence of network nodes, starting and ending at req[0]).
+//
+// Step 1: reduction to a classical TSP on the required nodes only.
+//
+// Since nodes and arcs may be reused, an optimal walk goes from one required
+// node to the next along a shortest path of the network. So once the
+// shortest-path distances d[i][j] are known, the problem becomes: in which
+// order should the required nodes be visited? That is an ordinary
+// asymmetric TSP on the |R| required nodes, with distances d (a complete
+// "virtual" graph, even though the network itself is sparse).
+//
+// Step 2: exact TSP by dynamic programming over subsets (Held–Karp, 1962).
+//
+// Instead of trying the (|R|−1)! orders, Held–Karp notices that the best
+// way to finish a tour only depends on WHICH required nodes have already
+// been visited and WHERE we currently stand, not on the order in which they
+// were visited. It therefore stores, for every subset S of required nodes
+// and every node j of S, the length of the best path that
+//
+//	starts at a fixed node req[0], visits exactly the nodes of S, ends at j.
+//
+// The tour is a cycle, so fixing its start at req[0] loses nothing. Cost:
+// 2^(|R|−1) subsets × |R| end nodes × |R| extensions, i.e. about 7 million
+// steps for |R| = 16 (instead of 15! ≈ 1.3·10¹² orders); memory 2^(|R|−1)·|R|
+// numbers. Beyond ~25 required nodes it becomes too large, which is why the
+// example itself uses the branch-and-cut formulation.
+//
+// Step 3: recovering the walk. The dynamic program only computes lengths;
+// to rebuild the tour we also record, for every state (S, k), which node j
+// it was reached from (parent), then walk these records backwards from the
+// best final state. Each leg between two consecutive required nodes is
+// finally expanded into the actual network nodes of its shortest path,
+// using the "next hop" table filled by Floyd–Warshall.
+func heldKarp(n int, arcs []arc, req []int) (float64, []int) {
+	// --- Shortest paths between all pairs (Floyd–Warshall) -------------------
+	d, next := shortestPaths(n, arcs)
 
 	// --- Held–Karp dynamic program --------------------------------------------
 	// The required nodes are numbered 0..r-1 through req. Node 0 (req[0]) is
@@ -403,17 +412,105 @@ func heldKarp(n int, arcs []arc, req []int) (float64, []int) {
 }
 
 func main() {
+	//if len(os.Args) > 1 && os.Args[1] == "evreux" {
+	evreux()
+	//return
+	//}
+
 	// Fixed seed: the same instance on every run.
-	rng := rand.New(rand.NewSource(3))
+	/*rng := rand.New(rand.NewSource(3))
 
 	// n: number of nodes; arcs: the sparse directed network.
 	n := 80
 	arcs, _, _ := network(n, rng)
 
-	// req: the required nodes (16 distinct nodes drawn at random);
-	// isReq[v] tells whether node v is required.
+	// req: the required nodes (16 distinct nodes drawn at random).
 	req := rng.Perm(n)[:16]
 	sort.Ints(req)
+	solveSteiner(n, arcs, req, true)*/
+}
+
+// evreux solves the two real pick lists of evreux.go on the warehouse
+// network: each tour starts and ends at the depot (cart zone) and must visit
+// the aisles of the list. The optimal tour is compared with the route the
+// picker actually followed (the aisles in the order of the list, each leg
+// along a shortest path).
+func evreux() {
+	n := Depot + 1 // nodes 0..223
+	d, next := shortestPaths(n, evreuxArcs)
+	var views []tourView // for the HTML drawing
+	for _, pl := range []struct {
+		name   string
+		aisles []int
+	}{
+		{"pil_db6yrpjfms75r10r (13 aisles)", pickList},
+		{"pil_db6yk5ctmh22dmmp (Geeli, 6 aisles)", pickListGeeli},
+	} {
+		fmt.Printf("=== pick list %s — graph of evreux.go (recorded costs, sides ignored) ===\n", pl.name)
+		// Required nodes: the depot first (start of the walks), then the
+		// aisles of the list.
+		req := append([]int{Depot}, pl.aisles...)
+
+		// Route actually followed: depot → aisles in the recorded order →
+		// depot, each leg along a shortest path of the network (the nodes
+		// of each leg are rebuilt with the next-hop table, for the drawing).
+		actual := 0.0
+		actualWalk := []int{Depot}
+		prev := Depot
+		for _, a := range append(append([]int{}, pl.aisles...), Depot) {
+			actual += d[prev][a]
+			for u := prev; u != a; {
+				u = next[u][a]
+				actualWalk = append(actualWalk, u)
+			}
+			prev = a
+		}
+
+		opt, optWalk := solveSteiner(n, evreuxArcs, req, false)
+		fmt.Printf("route in the recorded order: %.0f; optimal: %.0f; saving %.0f (%.1f%%)\n\n",
+			actual, opt, actual-opt, 100*(actual-opt)/actual)
+		views = append(views, tourView{name: pl.name, req: req, opt: optWalk, actual: actualWalk, optLen: opt, actLen: actual})
+	}
+
+	// Drawing of the network and of both tours (open the file in a browser).
+	const out = "evreux_graph.html"
+	// The layout ignores the depot: it is a merge of several cart points
+	// linked to almost every aisle, so its arcs would act as shortcuts and
+	// pull the whole picture around it. It is then placed at the centre of
+	// the aisles it reaches most cheaply.
+	var noDepot []arc
+	for _, e := range evreuxArcs {
+		if e.from != Depot && e.to != Depot {
+			noDepot = append(noDepot, e)
+		}
+	}
+	dl, _ := shortestPaths(n, noDepot)
+	coords := graphLayout(n, dl)
+	coords[Depot] = depotPosition(coords, evreuxArcs, 8)
+	if err := writeGraphHTML(out, n, evreuxArcs, coords, evreuxLabels, views); err != nil {
+		fmt.Println("cannot write the drawing:", err)
+		return
+	}
+	fmt.Println("drawing written to", out)
+
+	evreuxSideAware()
+}
+
+// evreuxLabels: aisle codes of the nodes of the pick lists (from the
+// comments of evreux.go).
+var evreuxLabels = map[int]string{
+	116: "3E12_13_A", 121: "3E16_17_B", 130: "3E26_27_A", 124: "3E20_21_A",
+	138: "3E34_35_A", 137: "3E32_33_B", 143: "3E38_39_B", 157: "4P01",
+	119: "3E14_15_B", 114: "3E10_11_A", 112: "3E08_09_A", 113: "3E08_09_B",
+	115: "3E10_11_B", 129: "3E24_25_B", 128: "3E24_25_A", 126: "3E22_23_A",
+}
+
+// solveSteiner builds and solves the Steiner TSP of the network (n nodes,
+// arcs) for the required nodes req; req[0] is the start of the printed
+// walks. It prints the solver log if logSolver, the optimal walk and the
+// Held–Karp cross-check, and returns the optimal length and walk.
+func solveSteiner(n int, arcs []arc, req []int, logSolver bool) (float64, []int) {
+	// isReq[v] tells whether node v is required.
 	isReq := make([]bool, n)
 	for _, v := range req {
 		isReq[v] = true
@@ -470,7 +567,9 @@ func main() {
 	// --- Connectivity constraints generated on demand ------------------------
 	lazyAdded, cutsAdded := 0, 0 // counters for the summary
 	p := gost.DefaultParams()
-	p.Log = os.Stdout
+	if logSolver {
+		p.Log = os.Stdout
+	}
 
 	// LazyConstraints: on an integer candidate, each connected piece of the
 	// arcs used (x ≥ 1) that holds some but not all required nodes is a set
@@ -532,15 +631,25 @@ func main() {
 		visits[v]++
 	}
 	printWalk("walk:", walk, isReq)
-	fmt.Println("required nodes are in brackets; nodes visited more than once:")
+	fmt.Print("required nodes are in brackets; nodes visited more than once:")
+	repeated := false
 	for v := 0; v < n; v++ {
 		if visits[v] > 1 {
-			fmt.Printf("  node %d: %d times\n", v, visits[v])
+			fmt.Printf("\n  node %d: %d times", v, visits[v])
+			repeated = true
 		}
 	}
+	if !repeated {
+		fmt.Print(" none")
+	}
+	fmt.Println()
 
 	// --- Cross-check ---------------------------------------------------------
 	ref, refWalk := heldKarp(n, arcs, req)
+	if math.IsInf(ref, 1) {
+		fmt.Println("Held–Karp: some required node cannot be reached")
+		return res.Objective, walk
+	}
 	fmt.Printf("shortest paths + Held–Karp: %.0f (difference %.0f)\n", ref, math.Abs(ref-res.Objective))
 	// The Held–Karp walk may differ from the solver's one when several
 	// optimal walks exist; its length is recomputed arc by arc as a check.
@@ -555,4 +664,74 @@ func main() {
 		}
 	}
 	fmt.Printf("Held–Karp walk length, recomputed from its arcs: %.0f\n", length)
+	return res.Objective, walk
+}
+
+// evreuxSideAware solves the two pick lists on the side-aware model of the
+// 3E block (evreux_geo.go): one-way aisles entered at one end and left at
+// the other, moves along the corridors, distances in meters. It prints the
+// optimal aisle order and the comparison with the recorded order, and draws
+// both tours on the real floor plan (evreux_plan.html).
+func evreuxSideAware() {
+	g := buildEvreuxGeo()
+	n := len(g.nodes)
+	d, next := shortestPaths(n, g.arcs)
+	fmt.Printf("\n##### side-aware model of the 3E block: %d nodes, %d arcs (meters) #####\n\n", n, len(g.arcs))
+	var views []tourView
+	for _, pl := range []struct {
+		name   string
+		aisles []int // nodes of evreux.go
+	}{
+		{"pil_db6yrpjfms75r10r (13 aisles)", pickList},
+		{"pil_db6yk5ctmh22dmmp (Geeli, 6 aisles)", pickListGeeli},
+	} {
+		fmt.Printf("=== pick list %s — side-aware model ===\n", pl.name)
+		// Required nodes: the depot, then the middle of each aisle of the
+		// list (in the recorded order).
+		req := []int{g.depot}
+		for _, v := range pl.aisles {
+			req = append(req, g.mid[evreuxNodeCode[v]])
+		}
+		// Recorded order: depot → aisles in the order of the list → depot,
+		// each leg along a shortest path (aisles walked in their direction).
+		actual := 0.0
+		actualWalk := []int{g.depot}
+		prev := g.depot
+		for _, v := range append(append([]int{}, req[1:]...), g.depot) {
+			actual += d[prev][v]
+			for u := prev; u != v; {
+				u = next[u][v]
+				actualWalk = append(actualWalk, u)
+			}
+			prev = v
+		}
+		opt, optWalk := solveSteiner(n, g.arcs, req, false)
+		// Aisle order of the optimal tour: the aisle middles in walk order.
+		var order []string
+		isReq := map[int]bool{}
+		for _, v := range req[1:] {
+			isReq[v] = true
+		}
+		for _, v := range optWalk {
+			if isReq[v] {
+				order = append(order, g.nodes[v].label)
+				delete(isReq, v)
+			}
+		}
+		var rec []string
+		for _, v := range pl.aisles {
+			rec = append(rec, evreuxNodeCode[v])
+		}
+		fmt.Printf("recorded order: %s\n", strings.Join(rec, " → "))
+		fmt.Printf("optimal order:  %s\n", strings.Join(order, " → "))
+		fmt.Printf("route in the recorded order: %.1f m; optimal: %.1f m; saving %.1f m (%.1f%%)\n\n",
+			actual, opt, actual-opt, 100*(actual-opt)/actual)
+		views = append(views, tourView{name: pl.name, req: req, opt: optWalk, actual: actualWalk, optLen: math.Round(opt), actLen: math.Round(actual)})
+	}
+	const plan = "evreux_plan.html"
+	if err := writePlanHTML(plan, g, views); err != nil {
+		fmt.Println("cannot write the plan:", err)
+		return
+	}
+	fmt.Println("floor plan written to", plan)
 }
