@@ -38,6 +38,7 @@
 //
 //	go run ./examples/steinertsp           # random instance (80 nodes)
 //	go run ./examples/steinertsp evreux    # real warehouse network and pick lists (evreux.go)
+//	go run ./examples/steinertsp evreux-all  # all the pick lists of a week, whole warehouse (evreux_all.go)
 package main
 
 import (
@@ -412,6 +413,16 @@ func heldKarp(n int, arcs []arc, req []int) (float64, []int) {
 }
 
 func main() {
+	// Whole warehouse, all pick lists of a data file (evreux_all.go).
+	if len(os.Args) > 1 && os.Args[1] == "evreux-all" {
+		path := "examples/steinertsp/data/evreux_picklists_2026-11-16_22.txt"
+		if len(os.Args) > 2 {
+			path = os.Args[2]
+		}
+		evreuxAll(path)
+		return
+	}
+
 	//if len(os.Args) > 1 && os.Args[1] == "evreux" {
 	evreux()
 	//return
